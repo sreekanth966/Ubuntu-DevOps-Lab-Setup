@@ -656,6 +656,11 @@ grep -nA1 "RemoteCIDRValve" \
 
 ---
 
+
+# 17A. Tomcat Web Applications
+
+The Tomcat Docker image keeps the default applications such as `ROOT`, `manager`, and `host-manager` under `/usr/local/tomcat/webapps.dist/`, while the active `webapps` directory is empty. Because our Compose file mounts `/data/devops-lab/tomcat/webapps` to `/usr/local/tomcat/webapps`, we copy these required applications into the persistent host directory so the Tomcat welcome page, Manager, and Host Manager are available.
+
 # 18. Create Final Docker Compose File
 
 Create:
