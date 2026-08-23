@@ -1,6 +1,6 @@
 # Ubuntu Docker DevOps Lab
 
-Complete local DevOps lab setup using Docker Compose:
+A complete local DevOps lab on Ubuntu using Docker Compose:
 
 - Jenkins
 - SonarQube
@@ -10,7 +10,10 @@ Complete local DevOps lab setup using Docker Compose:
 - Persistent storage under `/data/devops-lab`
 - Host ports starting from `8050`
 - Tomcat Manager and Host Manager
-- Tomcat users for administration and Jenkins deployment
+- Tomcat administrator and Jenkins deployment users
+- Jenkins → SonarQube → Nexus → Tomcat connectivity
+
+> This README is written for a **fresh installation** and follows the correct order so the Tomcat bind mounts do not hide the original Tomcat configuration before it is copied.
 
 ---
 
@@ -51,10 +54,22 @@ Complete local DevOps lab setup using Docker Compose:
 Recommended:
 
 - Ubuntu Desktop/Server
-- 16 GB RAM recommended
+- 16 GB RAM or more
 - At least 50 GB free disk space
 - Internet connectivity
 - `sudo` access
+
+Check Ubuntu:
+
+```bash
+cat /etc/os-release
+```
+
+Check architecture:
+
+```bash
+uname -m
+```
 
 ---
 
@@ -68,12 +83,18 @@ sudo apt upgrade -y
 Install required packages:
 
 ```bash
-sudo apt install -y ca-certificates curl gnupg
+sudo apt install -y \
+  ca-certificates \
+  curl \
+  gnupg \
+  lsb-release \
+  tree \
+  util-linux-extra
 ```
 
 ---
 
-# 4. Remove Old Docker Packages
+# 4. Remove Conflicting/Old Docker Packages
 
 If older Docker packages are installed:
 
@@ -87,11 +108,13 @@ sudo apt remove -y \
   runc
 ```
 
+If some packages are not installed, that is fine.
+
 ---
 
-# 5. Add Docker Repository
+# 5. Add Official Docker Repository
 
-Create the keyring directory:
+Create keyring directory:
 
 ```bash
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -142,7 +165,17 @@ sudo apt install -y \
 
 ---
 
-# 7. Verify Docker Installation
+# 7. Enable Docker
+
+```bash
+sudo systemctl enable --now docker
+```
+
+Check:
+
+```bash
+sudo systemctl status docker
+```
 
 Check Docker:
 
@@ -154,18 +187,6 @@ Check Compose:
 
 ```bash
 docker compose version
-```
-
-Check Docker service:
-
-```bash
-sudo systemctl status docker
-```
-
-Enable and start Docker:
-
-```bash
-sudo systemctl enable --now docker
 ```
 
 Test:
@@ -184,23 +205,19 @@ Add the current user to the Docker group:
 sudo usermod -aG docker $USER
 ```
 
-Check the Docker group:
+Verify:
 
 ```bash
 getent group docker
 ```
 
-You should see your current user in the group.
+The current user should appear in the output.
 
-For example:
+Apply the group change.
 
-```text
-docker:x:<gid>:$USER
-```
+### Recommended
 
-## Apply the new group membership
-
-Recommended: log out of Ubuntu and log back in.
+Log out and log back into Ubuntu.
 
 Then:
 
@@ -220,9 +237,7 @@ Test:
 docker ps
 ```
 
-## If `newgrp` is not available
-
-Install:
+### If `newgrp` is required
 
 ```bash
 sudo apt install -y util-linux-extra
@@ -241,27 +256,88 @@ groups
 docker ps
 ```
 
-Docker should now work without `sudo`.
+> Do not continue with the rest of the installation until `docker ps` works without `sudo`.
 
 ---
 
-# 9. Create DevOps Lab Directory
+# 9. Configure SonarQube Host Requirements
 
-All persistent DevOps application data is stored under `/data`.
+SonarQube uses Elasticsearch internally and requires suitable Linux kernel settings.
 
-Create the main directory:
+Set:
+
+```bash
+sudo sysctl -w vm.max_map_count=524288
+```
+
+Set:
+
+```bash
+sudo sysctl -w fs.file-max=131072
+```
+
+Make the settings persistent:
+
+```bash
+sudo tee /etc/sysctl.d/99-sonarqube.conf > /dev/null <<'EOF'
+vm.max_map_count=524288
+fs.file-max=131072
+EOF
+```
+
+Apply:
+
+```bash
+sudo sysctl --system
+```
+
+Verify:
+
+```bash
+sysctl vm.max_map_count
+```
+
+Expected:
+
+```text
+vm.max_map_count = 524288
+```
+
+Verify:
+
+```bash
+sysctl fs.file-max
+```
+
+Expected value should be at least:
+
+```text
+131072
+```
+
+---
+
+# 10. Create DevOps Lab Directory
+
+All persistent application data will be stored under:
+
+```text
+/data/devops-lab
+```
+
+Create it:
 
 ```bash
 sudo mkdir -p /data/devops-lab
 ```
 
-Give the current user ownership:
+Give ownership to the current user:
 
 ```bash
 sudo chown -R $USER:$USER /data/devops-lab
 ```
 
-Create all application directories:
+Create application directories:
 
 ```bash
 mkdir -p \
@@ -275,7 +351,7 @@ mkdir -p \
   /data/devops-lab/tomcat/webapps
 ```
 
-Move into the lab directory:
+Move into the lab:
 
 ```bash
 cd /data/devops-lab
@@ -283,59 +359,304 @@ cd /data/devops-lab
 
 ---
 
-# 10. Directory Structure
+# 11. Important Tomcat Initialization Concept
+
+The final Compose file contains:
+
+```yaml
+volumes:
+  - /data/devops-lab/tomcat/conf:/usr/local/tomcat/conf
+  - /data/devops-lab/tomcat/webapps:/usr/local/tomcat/webapps
+  - /data/devops-lab/tomcat/logs:/usr/local/tomcat/logs
+```
+
+A bind mount hides the corresponding directory inside the image.
+
+Therefore:
+
+```text
+Host:
+/data/devops-lab/tomcat/conf
+
+mounts over:
+
+Container:
+/usr/local/tomcat/conf
+```
+
+Likewise:
+
+```text
+/data/devops-lab/tomcat/webapps
+
+mounts over:
+
+/usr/local/tomcat/webapps
+```
+
+Because the host directories are initially empty, the original Tomcat configuration and web applications must be copied **before starting the final Tomcat container with these bind mounts**.
+
+This avoids the Tomcat `404`, `401`, and configuration problems encountered when the mount is introduced after the container is already running.
+
+---
+
+# 12. Create a Temporary Tomcat Container for Initialization
+
+Pull the Tomcat image:
+
+```bash
+docker pull tomcat:10.1-jdk21
+```
+
+Create a temporary container:
+
+```bash
+docker create \
+  --name tomcat-init \
+  tomcat:10.1-jdk21
+```
+
+The container does not need to run.
 
 Verify:
 
 ```bash
-tree /data/devops-lab
-```
-
-If `tree` is not installed:
-
-```bash
-sudo apt install -y tree
-```
-
-Initial structure:
-
-```text
-/data/devops-lab
-├── jenkins
-├── nexus
-├── sonarqube
-│   ├── data
-│   ├── extensions
-│   └── logs
-└── tomcat
-    ├── conf
-    ├── logs
-    └── webapps
-```
-
-Final structure:
-
-```text
-/data/devops-lab
-├── docker-compose.yml
-├── jenkins
-├── nexus
-├── sonarqube
-│   ├── data
-│   ├── extensions
-│   └── logs
-└── tomcat
-    ├── conf
-    ├── logs
-    └── webapps
-        ├── ROOT
-        ├── manager
-        └── host-manager
+docker ps -a --filter name=tomcat-init
 ```
 
 ---
 
-# 11. Create Docker Compose File
+# 13. Copy Tomcat Configuration to Persistent Storage
+
+Copy the original Tomcat configuration:
+
+```bash
+docker cp tomcat-init:/usr/local/tomcat/conf \
+  /data/devops-lab/tomcat/
+```
+
+Verify:
+
+```bash
+ls -la /data/devops-lab/tomcat/conf
+```
+
+You should see files such as:
+
+```text
+server.xml
+web.xml
+tomcat-users.xml
+tomcat-users.xsd
+context.xml
+logging.properties
+```
+
+---
+
+# 14. Copy Tomcat Web Applications
+
+Copy ROOT:
+
+```bash
+docker cp tomcat-init:/usr/local/tomcat/webapps.dist/ROOT \
+  /data/devops-lab/tomcat/webapps/
+```
+
+Copy Manager:
+
+```bash
+docker cp tomcat-init:/usr/local/tomcat/webapps.dist/manager \
+  /data/devops-lab/tomcat/webapps/
+```
+
+Copy Host Manager:
+
+```bash
+docker cp tomcat-init:/usr/local/tomcat/webapps.dist/host-manager \
+  /data/devops-lab/tomcat/webapps/
+```
+
+Verify:
+
+```bash
+ls -la /data/devops-lab/tomcat/webapps
+```
+
+Expected:
+
+```text
+ROOT/
+manager/
+host-manager/
+```
+
+---
+
+# 15. Remove Temporary Tomcat Container
+
+The temporary container is no longer required:
+
+```bash
+docker rm tomcat-init
+```
+
+Verify:
+
+```bash
+docker ps -a --filter name=tomcat-init
+```
+
+There should be no result.
+
+---
+
+# 16. Configure Tomcat Users
+
+Create:
+
+```bash
+cat > /data/devops-lab/tomcat/conf/tomcat-users.xml <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+
+<tomcat-users
+    xmlns="http://tomcat.apache.org/xml"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://tomcat.apache.org/xml tomcat-users.xsd"
+    version="1.0">
+
+    <!-- Manager roles -->
+    <role rolename="manager-gui"/>
+    <role rolename="manager-script"/>
+    <role rolename="manager-jmx"/>
+    <role rolename="manager-status"/>
+
+    <!-- Host Manager roles -->
+    <role rolename="admin-gui"/>
+    <role rolename="admin-script"/>
+
+    <!-- Tomcat Administrator -->
+    <user
+        username="admin"
+        password="Admin#123456"
+        roles="manager-gui,manager-script,manager-jmx,manager-status,admin-gui,admin-script"/>
+
+    <!-- Jenkins deployment user -->
+    <user
+        username="jenkins-deploy"
+        password="Jenkins#123"
+        roles="manager-script"/>
+
+</tomcat-users>
+EOF
+```
+
+Verify:
+
+```bash
+cat /data/devops-lab/tomcat/conf/tomcat-users.xml
+```
+
+## Tomcat Administrator
+
+```text
+Username: admin
+Password: Admin#123456
+```
+
+Roles:
+
+```text
+manager-gui
+manager-script
+manager-jmx
+manager-status
+admin-gui
+admin-script
+```
+
+## Jenkins Deployment User
+
+```text
+Username: jenkins-deploy
+Password: Jenkins#123
+```
+
+Role:
+
+```text
+manager-script
+```
+
+The Jenkins account is intended for automated WAR deployment.
+
+> These credentials are for this local lab only. Do not use them in production.
+
+---
+
+# 17. Configure Tomcat Manager Access
+
+Tomcat's Manager and Host Manager applications may contain a `RemoteCIDRValve` restricting access to localhost.
+
+Check Manager:
+
+```bash
+grep -nE "Valve|Remote" \
+  /data/devops-lab/tomcat/webapps/manager/META-INF/context.xml
+```
+
+Check Host Manager:
+
+```bash
+grep -nE "Valve|Remote" \
+  /data/devops-lab/tomcat/webapps/host-manager/META-INF/context.xml
+```
+
+The default may contain:
+
+```xml
+<Valve className="org.apache.catalina.valves.RemoteCIDRValve"
+       allow="127.0.0.0/8,::1/128" />
+```
+
+For this isolated local lab, change it to:
+
+```xml
+<Valve className="org.apache.catalina.valves.RemoteCIDRValve"
+       allow="0.0.0.0/0,::/0" />
+```
+
+Run:
+
+```bash
+sed -i 's/allow="127.0.0.0\/8,::1\/128"/allow="0.0.0.0\/0,::\/0"/' \
+/data/devops-lab/tomcat/webapps/manager/META-INF/context.xml
+```
+
+And:
+
+```bash
+sed -i 's/allow="127.0.0.0\/8,::1\/128"/allow="0.0.0.0\/0,::\/0"/' \
+/data/devops-lab/tomcat/webapps/host-manager/META-INF/context.xml
+```
+
+Verify:
+
+```bash
+grep -nA1 "RemoteCIDRValve" \
+/data/devops-lab/tomcat/webapps/manager/META-INF/context.xml
+```
+
+```bash
+grep -nA1 "RemoteCIDRValve" \
+/data/devops-lab/tomcat/webapps/host-manager/META-INF/context.xml
+```
+
+> `0.0.0.0/0,::/0` permits access from any reachable address. This is acceptable only for an isolated local lab. In production, restrict access to trusted CIDRs.
+
+---
+
+# 18. Create Final Docker Compose File
 
 Create:
 
@@ -343,7 +664,7 @@ Create:
 nano /data/devops-lab/docker-compose.yml
 ```
 
-Use this complete configuration:
+Use:
 
 ```yaml
 services:
@@ -434,13 +755,8 @@ services:
       - "8053:8080"
 
     volumes:
-      # Persistent Tomcat configuration
       - /data/devops-lab/tomcat/conf:/usr/local/tomcat/conf
-
-      # Persistent web applications
       - /data/devops-lab/tomcat/webapps:/usr/local/tomcat/webapps
-
-      # Persistent Tomcat logs
       - /data/devops-lab/tomcat/logs:/usr/local/tomcat/logs
 
     networks:
@@ -460,28 +776,61 @@ networks:
     driver: bridge
 ```
 
-Save:
-
-```text
-CTRL + O
-ENTER
-CTRL + X
-```
-
 ---
 
-# 12. Validate Docker Compose
+# 19. Validate Compose Before Starting
 
 ```bash
 cd /data/devops-lab
+```
+
+Run:
+
+```bash
 docker compose config
 ```
 
-The command must complete without errors.
+It must complete without errors.
 
 ---
 
-# 13. Pull Images
+# 20. Verify Tomcat Files Before Starting
+
+This is an important fresh-install checkpoint.
+
+Check configuration:
+
+```bash
+test -f /data/devops-lab/tomcat/conf/tomcat-users.xml \
+  && echo "Tomcat configuration OK"
+```
+
+Check ROOT:
+
+```bash
+test -d /data/devops-lab/tomcat/webapps/ROOT \
+  && echo "ROOT application OK"
+```
+
+Check Manager:
+
+```bash
+test -d /data/devops-lab/tomcat/webapps/manager \
+  && echo "Manager application OK"
+```
+
+Check Host Manager:
+
+```bash
+test -d /data/devops-lab/tomcat/webapps/host-manager \
+  && echo "Host Manager application OK"
+```
+
+All four should report `OK`.
+
+---
+
+# 21. Pull All Images
 
 ```bash
 docker compose pull
@@ -495,7 +844,7 @@ docker images
 
 ---
 
-# 14. Start All Services
+# 22. Start the Complete Lab
 
 ```bash
 docker compose up -d
@@ -516,7 +865,7 @@ nexus
 tomcat
 ```
 
-All should eventually show:
+All should eventually be:
 
 ```text
 Up
@@ -524,19 +873,33 @@ Up
 
 ---
 
-# 15. Recreate Services After Compose Changes
+# 23. Important: Recreate After Compose Changes
 
-If `docker-compose.yml` changes:
+If `docker-compose.yml` is changed, use:
 
 ```bash
 docker compose up -d --force-recreate
 ```
 
-This is especially important when adding or changing bind mounts.
+For Tomcat only:
+
+```bash
+docker compose up -d --force-recreate tomcat
+```
+
+After the initial Tomcat files have been copied into `/data/devops-lab`, **do not copy `conf` from the container back to the host again**, because that can overwrite your customized configuration.
+
+The persistent source of truth is:
+
+```text
+/data/devops-lab/tomcat/conf
+/data/devops-lab/tomcat/webapps
+/data/devops-lab/tomcat/logs
+```
 
 ---
 
-# 16. Check Docker Network
+# 24. Verify Docker Network
 
 ```bash
 docker network ls
@@ -554,7 +917,7 @@ Inspect:
 docker network inspect devops-net
 ```
 
-The following containers should be connected:
+Expected containers:
 
 ```text
 jenkins
@@ -565,379 +928,7 @@ tomcat
 
 ---
 
-# 17. Application URLs
-
-| Application | URL |
-|---|---|
-| Jenkins | http://localhost:8050 |
-| SonarQube | http://localhost:8051 |
-| Nexus | http://localhost:8052 |
-| Tomcat | http://localhost:8053 |
-
----
-
-# 18. Jenkins Initial Password
-
-Get the initial administrator password:
-
-```bash
-docker exec jenkins \
-  cat /var/jenkins_home/secrets/initialAdminPassword
-```
-
-Open:
-
-```text
-http://localhost:8050
-```
-
-Use the password returned by the command.
-
-Example:
-
-```text
-Username: admin
-Password: <initial password returned above>
-```
-
----
-
-# 19. SonarQube Initial Login
-
-Open:
-
-```text
-http://localhost:8051
-```
-
-Initial credentials:
-
-```text
-Username: admin
-Password: admin
-```
-
-After the initial login, change the password if the environment will be accessible beyond the local lab.
-
----
-
-# 20. Nexus Initial Login
-
-Open:
-
-```text
-http://localhost:8052
-```
-
-Nexus uses the administrator password generated during initialization.
-
-Try:
-
-```bash
-docker exec nexus cat /nexus-data/admin.password
-```
-
-If the file exists, use the returned password.
-
-If Nexus has already completed its initial setup and the password file no longer exists, use the administrator credentials configured during the Nexus setup.
-
----
-
-# 21. Tomcat Default Welcome Page
-
-Because the following host directory is bind-mounted:
-
-```text
-/data/devops-lab/tomcat/webapps
-```
-
-it initially hides the image's original Tomcat `webapps` directory.
-
-If the directory is empty, copy the default ROOT application:
-
-```bash
-docker cp tomcat:/usr/local/tomcat/webapps.dist/ROOT \
-  /data/devops-lab/tomcat/webapps/
-```
-
-Verify:
-
-```bash
-ls -la /data/devops-lab/tomcat/webapps
-```
-
-You should see:
-
-```text
-ROOT/
-```
-
-Restart:
-
-```bash
-docker compose restart tomcat
-```
-
-Open:
-
-```text
-http://localhost:8053
-```
-
-The Tomcat welcome page should now appear.
-
----
-
-# 22. Install Tomcat Manager and Host Manager
-
-The default Tomcat image keeps the Manager applications under:
-
-```text
-/usr/local/tomcat/webapps.dist/
-```
-
-Copy Manager:
-
-```bash
-docker cp tomcat:/usr/local/tomcat/webapps.dist/manager \
-  /data/devops-lab/tomcat/webapps/
-```
-
-Copy Host Manager:
-
-```bash
-docker cp tomcat:/usr/local/tomcat/webapps.dist/host-manager \
-  /data/devops-lab/tomcat/webapps/
-```
-
-Verify:
-
-```bash
-ls -la /data/devops-lab/tomcat/webapps
-```
-
-Expected:
-
-```text
-ROOT/
-manager/
-host-manager/
-```
-
----
-
-# 23. Create Persistent Tomcat Configuration
-
-The Tomcat configuration is stored under:
-
-```text
-/data/devops-lab/tomcat/conf
-```
-
-If the directory is empty, copy the original configuration from the running container:
-
-```bash
-docker cp tomcat:/usr/local/tomcat/conf \
-  /data/devops-lab/tomcat/
-```
-
-Verify:
-
-```bash
-ls -la /data/devops-lab/tomcat/conf
-```
-
-You should see:
-
-```text
-server.xml
-web.xml
-tomcat-users.xml
-tomcat-users.xsd
-context.xml
-...
-```
-
----
-
-# 24. Configure Tomcat Users
-
-Create/update:
-
-```bash
-cat > /data/devops-lab/tomcat/conf/tomcat-users.xml <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-
-<tomcat-users
-    xmlns="http://tomcat.apache.org/xml"
-    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    xsi:schemaLocation="http://tomcat.apache.org/xml tomcat-users.xsd"
-    version="1.0">
-
-    <!-- Manager roles -->
-    <role rolename="manager-gui"/>
-    <role rolename="manager-script"/>
-    <role rolename="manager-jmx"/>
-    <role rolename="manager-status"/>
-
-    <!-- Host Manager roles -->
-    <role rolename="admin-gui"/>
-    <role rolename="admin-script"/>
-
-    <!-- Tomcat Administrator -->
-    <user
-        username="admin"
-        password="Admin#123456"
-        roles="manager-gui,manager-script,manager-jmx,manager-status,admin-gui,admin-script"/>
-
-    <!-- Jenkins deployment user -->
-    <user
-        username="jenkins-deploy"
-        password="Jenkins#123"
-        roles="manager-script"/>
-
-</tomcat-users>
-EOF
-```
-
-Verify:
-
-```bash
-cat /data/devops-lab/tomcat/conf/tomcat-users.xml
-```
-
----
-
-# 25. Tomcat User Details
-
-## Tomcat Administrator
-
-```text
-Username: admin
-Password: Admin#123456
-```
-
-Roles:
-
-```text
-manager-gui
-manager-script
-manager-jmx
-manager-status
-admin-gui
-admin-script
-```
-
-The `admin` user can access:
-
-```text
-Manager App
-Server Status
-Host Manager
-```
-
-## Jenkins Deployment User
-
-```text
-Username: jenkins-deploy
-Password: Jenkins#123
-```
-
-Role:
-
-```text
-manager-script
-```
-
-This user is intended for automated Jenkins WAR deployments.
-
-Do not use the administrator account for Jenkins deployment when the dedicated deployment account is sufficient.
-
-> These passwords are for this local lab setup only. Do not use these credentials in production.
-
----
-
-# 26. Configure Tomcat Manager Access Through Docker
-
-Tomcat 10.1 uses `RemoteCIDRValve` in the Manager and Host Manager applications.
-
-Check Manager:
-
-```bash
-grep -nE "Valve|Remote" \
-  /data/devops-lab/tomcat/webapps/manager/META-INF/context.xml
-```
-
-Check Host Manager:
-
-```bash
-grep -nE "Valve|Remote" \
-  /data/devops-lab/tomcat/webapps/host-manager/META-INF/context.xml
-```
-
-The default configuration may contain:
-
-```xml
-<Valve className="org.apache.catalina.valves.RemoteCIDRValve"
-       allow="127.0.0.0/8,::1/128" />
-```
-
-This can cause `403` when accessing the Manager through Docker.
-
-For this isolated local lab, allow Docker/network access:
-
-```bash
-sed -i 's/allow="127.0.0.0\/8,::1\/128"/allow="0.0.0.0\/0,::\/0"/' \
-/data/devops-lab/tomcat/webapps/manager/META-INF/context.xml
-```
-
-And:
-
-```bash
-sed -i 's/allow="127.0.0.0\/8,::1\/128"/allow="0.0.0.0\/0,::\/0"/' \
-/data/devops-lab/tomcat/webapps/host-manager/META-INF/context.xml
-```
-
-Verify:
-
-```bash
-grep -nA1 "RemoteCIDRValve" \
-/data/devops-lab/tomcat/webapps/manager/META-INF/context.xml
-```
-
-And:
-
-```bash
-grep -nA1 "RemoteCIDRValve" \
-/data/devops-lab/tomcat/webapps/host-manager/META-INF/context.xml
-```
-
-Expected:
-
-```xml
-<Valve className="org.apache.catalina.valves.RemoteCIDRValve"
-       allow="0.0.0.0/0,::/0" />
-```
-
-> `0.0.0.0/0,::/0` allows access from any reachable address. This is suitable only for an isolated local lab. For production, restrict access to trusted IP/CIDR ranges.
-
----
-
-# 27. Restart Tomcat After Configuration Changes
-
-```bash
-docker compose restart tomcat
-```
-
-If the Compose file itself changed, use:
-
-```bash
-docker compose up -d --force-recreate tomcat
-```
-
----
-
-# 28. Verify Tomcat Persistent Mounts
+# 25. Verify Tomcat Persistent Mounts
 
 Run:
 
@@ -954,11 +945,11 @@ Expected:
 /data/devops-lab/tomcat/webapps -> /usr/local/tomcat/webapps
 ```
 
-This is important because the `conf` mount ensures your persistent `tomcat-users.xml` is actually used by Tomcat.
+This confirms that the customized host configuration is actually being used.
 
 ---
 
-# 29. Verify Tomcat Users Inside Container
+# 26. Verify Tomcat Users Inside Container
 
 ```bash
 docker exec tomcat cat /usr/local/tomcat/conf/tomcat-users.xml
@@ -978,20 +969,141 @@ jenkins-deploy
 Jenkins#123
 ```
 
-If the container still shows the original default Tomcat users file, check the mounts:
+---
+
+# 27. Verify Tomcat Applications
 
 ```bash
-docker inspect tomcat \
-  --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+docker exec tomcat ls -la /usr/local/tomcat/webapps
+```
+
+Expected:
+
+```text
+ROOT
+manager
+host-manager
 ```
 
 ---
 
-# 30. Test Tomcat Manager Authentication
+# 28. Application URLs
 
-Do not use only `curl -I` for authentication testing.
+| Application | URL |
+|---|---|
+| Jenkins | http://localhost:8050 |
+| SonarQube | http://localhost:8051 |
+| Nexus | http://localhost:8052 |
+| Tomcat | http://localhost:8053 |
 
-Test the Manager text interface:
+---
+
+# 29. Jenkins Initial Password
+
+Get:
+
+```bash
+docker exec jenkins \
+  cat /var/jenkins_home/secrets/initialAdminPassword
+```
+
+Open:
+
+```text
+http://localhost:8050
+```
+
+Use the generated password.
+
+> Jenkins does not use a predefined `admin/admin` password. The initial administrator password is generated by Jenkins.
+
+---
+
+# 30. SonarQube Initial Login
+
+Open:
+
+```text
+http://localhost:8051
+```
+
+Initial credentials:
+
+```text
+Username: admin
+Password: admin
+```
+
+Change the password after the first login if the service will be exposed beyond the local lab.
+
+---
+
+# 31. Nexus Initial Login
+
+Open:
+
+```text
+http://localhost:8052
+```
+
+For the initial administrator password:
+
+```bash
+docker exec nexus cat /nexus-data/admin.password
+```
+
+If the file exists, use that password.
+
+After Nexus initialization, the password file may no longer be available. Use the administrator password configured during Nexus setup.
+
+---
+
+# 32. Tomcat URLs
+
+Main Tomcat:
+
+```text
+http://localhost:8053
+```
+
+Server Status:
+
+```text
+http://localhost:8053/manager/status
+```
+
+Manager App:
+
+```text
+http://localhost:8053/manager/html
+```
+
+Host Manager:
+
+```text
+http://localhost:8053/host-manager/html
+```
+
+Login:
+
+```text
+Username: admin
+Password: Admin#123456
+```
+
+---
+
+# 33. Test Tomcat Manager Authentication
+
+Do not use only:
+
+```bash
+curl -I
+```
+
+because that only performs a HEAD request and does not properly verify the authenticated Manager API.
+
+Test:
 
 ```bash
 curl -u 'admin:Admin#123456' \
@@ -1004,7 +1116,7 @@ Expected:
 OK - Listed applications for virtual host localhost
 ```
 
-Test the Jenkins deployment user:
+Test Jenkins deployment user:
 
 ```bash
 curl -u 'jenkins-deploy:Jenkins#123' \
@@ -1019,11 +1131,11 @@ OK - Listed applications for virtual host localhost
 
 ---
 
-# 31. Test Tomcat Manager From Jenkins
+# 34. Test Jenkins → Tomcat Connectivity
 
-This verifies the actual Jenkins-to-Tomcat Docker network path.
+This tests the Docker bridge network rather than the host port.
 
-Enter the Jenkins container:
+Enter Jenkins:
 
 ```bash
 docker exec -it jenkins bash
@@ -1048,7 +1160,7 @@ Exit:
 exit
 ```
 
-The internal Jenkins deployment URL is:
+The Jenkins-to-Tomcat endpoint is:
 
 ```text
 http://tomcat:8080/manager/text
@@ -1060,82 +1172,45 @@ Do not use:
 http://localhost:8053/manager/text
 ```
 
-from inside Jenkins because `localhost` means the Jenkins container.
+from inside Jenkins because `localhost` refers to the Jenkins container itself.
 
 ---
 
-# 32. Tomcat URLs
+# 35. Nexus Permission Troubleshooting
 
-## Main Tomcat
+Nexus runs as a non-root user.
 
-```text
-http://localhost:8053
-```
-
-## Server Status
-
-```text
-http://localhost:8053/manager/status
-```
-
-## Manager App
-
-```text
-http://localhost:8053/manager/html
-```
-
-## Host Manager
-
-```text
-http://localhost:8053/host-manager/html
-```
-
-Login:
-
-```text
-Username: admin
-Password: Admin#123456
-```
-
----
-
-# 33. Nexus Permission Fix
-
-Nexus runs as a non-root user inside the container.
-
-Check its UID/GID:
+Check:
 
 ```bash
 docker run --rm sonatype/nexus3:latest id nexus
 ```
 
-Expected to be similar to:
+Typical output:
 
 ```text
 uid=200(nexus) gid=200(nexus) groups=200(nexus)
 ```
 
-If Nexus has permission errors on `/nexus-data`, stop it:
+If Nexus reports permission errors on `/nexus-data`:
 
 ```bash
 docker compose stop nexus
 ```
 
-Set ownership using the UID/GID returned above.
-
-For the standard Nexus image:
+For the standard image:
 
 ```bash
 sudo chown -R 200:200 /data/devops-lab/nexus
 ```
 
-Set reasonable permissions:
+Set permissions:
 
 ```bash
 sudo chmod -R u+rwX,go-rwx /data/devops-lab/nexus
 ```
 
-Start Nexus:
+Start:
 
 ```bash
 docker compose up -d nexus
@@ -1155,7 +1230,7 @@ docker compose logs --tail=50 nexus
 
 ---
 
-# 34. Tomcat 404 Troubleshooting
+# 36. Tomcat 404 Troubleshooting
 
 If:
 
@@ -1175,24 +1250,44 @@ check:
 ls -la /data/devops-lab/tomcat/webapps
 ```
 
-If the directory is empty, Tomcat has no ROOT application because the bind mount hides the image's original `webapps` directory.
+You should have:
+
+```text
+ROOT/
+manager/
+host-manager/
+```
+
+If `ROOT` is missing, the initial copy was not completed.
+
+Use a temporary container again:
+
+```bash
+docker create --name tomcat-init tomcat:10.1-jdk21
+```
 
 Copy ROOT:
 
 ```bash
-docker cp tomcat:/usr/local/tomcat/webapps.dist/ROOT \
+docker cp tomcat-init:/usr/local/tomcat/webapps.dist/ROOT \
   /data/devops-lab/tomcat/webapps/
 ```
 
-Restart:
+Remove the temporary container:
 
 ```bash
-docker compose restart tomcat
+docker rm tomcat-init
+```
+
+Recreate Tomcat:
+
+```bash
+docker compose up -d --force-recreate tomcat
 ```
 
 ---
 
-# 35. Tomcat Manager 403 Troubleshooting
+# 37. Tomcat Manager 403 Troubleshooting
 
 If:
 
@@ -1219,45 +1314,45 @@ If you see:
 allow="127.0.0.0/8,::1/128"
 ```
 
-the Manager is restricted to localhost inside the container.
+the Manager is restricted.
 
-For the local lab:
+For this local lab:
 
 ```bash
 sed -i 's/allow="127.0.0.0\/8,::1\/128"/allow="0.0.0.0\/0,::\/0"/' \
 /data/devops-lab/tomcat/webapps/manager/META-INF/context.xml
 ```
 
-Do the same for Host Manager:
+Host Manager:
 
 ```bash
 sed -i 's/allow="127.0.0.0\/8,::1\/128"/allow="0.0.0.0\/0,::\/0"/' \
 /data/devops-lab/tomcat/webapps/host-manager/META-INF/context.xml
 ```
 
-Restart:
+Recreate:
 
 ```bash
-docker compose restart tomcat
+docker compose up -d --force-recreate tomcat
 ```
 
 ---
 
-# 36. Tomcat Manager 401 Troubleshooting
+# 38. Tomcat Manager 401 Troubleshooting
 
-If you get:
+If:
 
 ```text
 401 Unauthorized
 ```
 
-after fixing the `RemoteCIDRValve`, verify the user file inside the container:
+occurs, verify the actual file being used:
 
 ```bash
 docker exec tomcat cat /usr/local/tomcat/conf/tomcat-users.xml
 ```
 
-If it shows only the original commented example users, the `conf` bind mount is missing.
+If it contains only the default commented examples, your customized file is not mounted.
 
 Check:
 
@@ -1266,13 +1361,13 @@ docker inspect tomcat \
   --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
 ```
 
-You must have:
+You must see:
 
 ```text
 /data/devops-lab/tomcat/conf -> /usr/local/tomcat/conf
 ```
 
-Then recreate Tomcat:
+Then:
 
 ```bash
 docker compose up -d --force-recreate tomcat
@@ -1286,7 +1381,7 @@ docker exec tomcat cat /usr/local/tomcat/conf/tomcat-users.xml
 
 ---
 
-# 37. Check All Services
+# 39. Check All Services
 
 ```bash
 docker compose ps
@@ -1303,9 +1398,9 @@ tomcat      Up
 
 ---
 
-# 38. Check Logs
+# 40. Check Logs
 
-All services:
+All:
 
 ```bash
 docker compose logs -f
@@ -1335,7 +1430,7 @@ Tomcat:
 docker compose logs -f tomcat
 ```
 
-Latest 50 lines:
+Last 50 lines:
 
 ```bash
 docker compose logs --tail=50
@@ -1343,23 +1438,23 @@ docker compose logs --tail=50
 
 ---
 
-# 39. Check Resource Usage
+# 41. Check Resource Usage
 
 ```bash
 docker stats
 ```
 
-This is useful because Jenkins, SonarQube and Nexus can consume significant memory.
+Jenkins, SonarQube and Nexus can consume significant memory.
 
 ---
 
-# 40. Check Ports
+# 42. Check Ports
 
 ```bash
 sudo ss -lntp | grep -E '8050|8051|8052|8053|50000'
 ```
 
-Expected host ports:
+Expected:
 
 ```text
 8050
@@ -1371,7 +1466,7 @@ Expected host ports:
 
 ---
 
-# 41. Start and Stop
+# 43. Start / Stop / Restart
 
 Start:
 
@@ -1397,7 +1492,7 @@ Restart:
 docker compose restart
 ```
 
-Restart one service:
+Restart Tomcat:
 
 ```bash
 docker compose restart tomcat
@@ -1405,13 +1500,15 @@ docker compose restart tomcat
 
 ---
 
-# 42. Shutdown Without Deleting Persistent Data
+# 44. Shutdown Without Deleting Data
 
 ```bash
 docker compose down
 ```
 
-This removes containers and the Compose network but keeps:
+This removes containers and the Compose network.
+
+It does not remove the host data:
 
 ```text
 /data/devops-lab
@@ -1425,27 +1522,34 @@ docker compose up -d
 
 ---
 
-# 43. Do Not Delete Persistent Data Accidentally
+# 45. Reboot Recovery
 
-This setup uses host bind mounts rather than Docker-managed named volumes.
+Because every service uses:
 
-The important persistent data is under:
-
-```text
-/data/devops-lab
+```yaml
+restart: unless-stopped
 ```
 
-Do not run:
+Docker will automatically restart the containers after Docker starts.
+
+Check after reboot:
 
 ```bash
-sudo rm -rf /data/devops-lab
+docker compose ps
 ```
 
-unless you intentionally want to delete the entire lab.
+If necessary:
+
+```bash
+cd /data/devops-lab
+docker compose up -d
+```
+
+No Tomcat files need to be copied again.
 
 ---
 
-# 44. Final Persistent Storage
+# 46. Persistent Storage
 
 ```text
 /data/devops-lab/
@@ -1479,11 +1583,39 @@ unless you intentionally want to delete the entire lab.
 
 ---
 
-# 45. Final Port Mapping
+# 47. Important Data Safety
+
+This setup uses host bind mounts.
+
+Important data is stored under:
+
+```text
+/data/devops-lab
+```
+
+Do not run:
+
+```bash
+sudo rm -rf /data/devops-lab
+```
+
+unless you intentionally want to delete the entire lab.
+
+Do not use:
+
+```bash
+docker compose down -v
+```
+
+as this setup is based on host bind mounts and should not need volume deletion.
+
+---
+
+# 48. Final Port Mapping
 
 ```text
 Host                         Container
-────────────────────────────────────────────────
+──────────────────────────────────────────────
 localhost:8050       ──────→ Jenkins :8080
 
 localhost:8051       ──────→ SonarQube :9000
@@ -1497,14 +1629,13 @@ localhost:50000      ──────→ Jenkins :50000
 
 ---
 
-# 46. Internal Docker URLs
+# 49. Internal Docker URLs
 
-From Jenkins or another container on `devops-net`:
+Containers communicate using Docker service/container names.
+
+From Jenkins:
 
 ```text
-Jenkins:
-http://jenkins:8080
-
 SonarQube:
 http://sonarqube:9000
 
@@ -1522,7 +1653,7 @@ Do not use host `localhost` URLs from inside containers.
 
 ---
 
-# 47. Final DevOps CI/CD Architecture
+# 50. Final DevOps CI/CD Architecture
 
 ```text
                     Git Repository
@@ -1535,7 +1666,7 @@ Do not use host `localhost` URLs from inside containers.
                     Maven Build
                            │
                            ▼
-                     Unit Tests
+                      Unit Tests
                            │
                            ▼
                        SonarQube
@@ -1562,19 +1693,23 @@ Do not use host `localhost` URLs from inside containers.
                      Application
 ```
 
-Jenkins communicates internally through:
+Internal communication:
 
 ```text
-SonarQube → http://sonarqube:9000
-Nexus     → http://nexus:8081
-Tomcat    → http://tomcat:8080
+Jenkins
+   │
+   ├── SonarQube → http://sonarqube:9000
+   │
+   ├── Nexus     → http://nexus:8081
+   │
+   └── Tomcat    → http://tomcat:8080
 ```
 
 ---
 
-# 48. Jenkins → Tomcat Deployment
+# 51. Jenkins → Tomcat Deployment
 
-Use the dedicated Tomcat account:
+Dedicated Tomcat deployment account:
 
 ```text
 Username: jenkins-deploy
@@ -1582,20 +1717,22 @@ Password: Jenkins#123
 Role: manager-script
 ```
 
-Jenkins deployment endpoint:
+Deployment endpoint:
 
 ```text
 http://tomcat:8080/manager/text
 ```
 
-The deployment flow will be:
+Typical flow:
 
 ```text
 Jenkins
    │
-   ├── Build WAR
+   ├── Checkout source
    │
-   ├── Run tests
+   ├── Maven build
+   │
+   ├── Unit tests
    │
    ├── SonarQube scan
    │
@@ -1611,98 +1748,46 @@ Jenkins
 
 ---
 
-# 49. Daily Commands
+# 52. Quick Health Check
 
-Go to the lab:
-
-```bash
-cd /data/devops-lab
-```
-
-Check services:
+Check containers:
 
 ```bash
 docker compose ps
 ```
 
-Start:
-
-```bash
-docker compose up -d
-```
-
-Stop:
-
-```bash
-docker compose stop
-```
-
-Restart:
-
-```bash
-docker compose restart
-```
-
-Logs:
-
-```bash
-docker compose logs -f
-```
-
-Resource usage:
-
-```bash
-docker stats
-```
-
-Network:
-
-```bash
-docker network inspect devops-net
-```
-
-Validate Compose:
-
-```bash
-docker compose config
-```
-
----
-
-# 50. Quick Health Check
-
-Run:
-
-```bash
-docker compose ps
-```
-
-Then:
+Check Jenkins:
 
 ```bash
 curl -I http://localhost:8050
 ```
 
+Check SonarQube:
+
 ```bash
 curl -I http://localhost:8051
 ```
+
+Check Nexus:
 
 ```bash
 curl -I http://localhost:8052
 ```
 
+Check Tomcat:
+
 ```bash
 curl -I http://localhost:8053
 ```
 
-Test Tomcat Manager authentication:
+Test Tomcat Manager:
 
 ```bash
 curl -u 'admin:Admin#123456' \
   http://localhost:8053/manager/text/list
 ```
 
-Test Jenkins deployment authentication:
+Test Jenkins deployment account:
 
 ```bash
 curl -u 'jenkins-deploy:Jenkins#123' \
@@ -1711,48 +1796,129 @@ curl -u 'jenkins-deploy:Jenkins#123' \
 
 ---
 
-# 51. Final Environment
+# 53. Final Verification Checklist
 
-The completed local DevOps environment is:
+Run each item:
 
-```text
-┌─────────────────────────────────────────────────────┐
-│                    Ubuntu Host                      │
-│                                                     │
-│                  Docker Engine                      │
-│                                                     │
-│                 devops-net (bridge)                 │
-│                                                     │
-│   ┌──────────┐   ┌───────────┐   ┌──────────┐      │
-│   │ Jenkins  │   │ SonarQube │   │  Nexus   │      │
-│   │  :8080   │   │   :9000   │   │  :8081   │      │
-│   └────┬─────┘   └───────────┘   └──────────┘      │
-│        │                                            │
-│        │                                            │
-│   ┌────▼─────┐                                     │
-│   │  Tomcat  │                                     │
-│   │  :8080   │                                     │
-│   └──────────┘                                     │
-│                                                     │
-│ Host Ports:                                        │
-│ 8050 → Jenkins                                     │
-│ 8051 → SonarQube                                   │
-│ 8052 → Nexus                                       │
-│ 8053 → Tomcat                                      │
-│                                                     │
-└─────────────────────────────────────────────────────┘
+```bash
+docker --version
 ```
 
-Persistent storage:
-
-```text
-/data/devops-lab
+```bash
+docker compose version
 ```
 
-Custom network:
-
-```text
-devops-net
+```bash
+docker ps
 ```
 
-The environment is ready for building a complete Jenkins → Maven → SonarQube → Nexus → Tomcat CI/CD pipeline.
+```bash
+docker compose config
+```
+
+```bash
+docker compose ps
+```
+
+```bash
+docker network inspect devops-net
+```
+
+```bash
+docker inspect tomcat \
+  --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+```
+
+```bash
+docker exec tomcat \
+  cat /usr/local/tomcat/conf/tomcat-users.xml
+```
+
+```bash
+docker exec tomcat \
+  ls -la /usr/local/tomcat/webapps
+```
+
+```bash
+curl -u 'admin:Admin#123456' \
+  http://localhost:8053/manager/text/list
+```
+
+```bash
+curl -u 'jenkins-deploy:Jenkins#123' \
+  http://localhost:8053/manager/text/list
+```
+
+From Jenkins:
+
+```bash
+docker exec jenkins \
+  curl -u 'jenkins-deploy:Jenkins#123' \
+  http://tomcat:8080/manager/text/list
+```
+
+Expected final service state:
+
+```text
+jenkins     Up
+sonarqube   Up
+nexus       Up
+tomcat      Up
+```
+
+---
+
+# 54. Final Environment
+
+```text
+┌──────────────────────────────────────────────────────────┐
+│                     Ubuntu Host                          │
+│                                                          │
+│                    Docker Engine                         │
+│                                                          │
+│                   devops-net (bridge)                    │
+│                                                          │
+│   ┌──────────┐    ┌───────────┐    ┌──────────┐         │
+│   │ Jenkins  │    │ SonarQube │    │  Nexus   │         │
+│   │  :8080   │    │   :9000   │    │  :8081   │         │
+│   └────┬─────┘    └───────────┘    └──────────┘         │
+│        │                                                 │
+│        │                                                 │
+│   ┌────▼─────┐                                          │
+│   │  Tomcat  │                                          │
+│   │  :8080   │                                          │
+│   └──────────┘                                          │
+│                                                          │
+│ Host Ports:                                             │
+│                                                          │
+│ 8050 → Jenkins                                           │
+│ 8051 → SonarQube                                         │
+│ 8052 → Nexus                                             │
+│ 8053 → Tomcat                                            │
+│ 50000 → Jenkins Agent                                    │
+│                                                          │
+│ Persistent Data:                                        │
+│ /data/devops-lab                                        │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+The lab is now ready for a complete:
+
+```text
+Jenkins
+   ↓
+Maven
+   ↓
+Unit Tests
+   ↓
+SonarQube
+   ↓
+Quality Gate
+   ↓
+Nexus
+   ↓
+Tomcat
+```
+
+CI/CD pipeline.
