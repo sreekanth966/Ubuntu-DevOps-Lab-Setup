@@ -184,13 +184,13 @@ getent group docker
 Expected:
 
 ```text
-docker:x:<gid>:<username>
+docker:x:<gid>:$USER
 ```
 
 For example:
 
 ```text
-docker:x:973:sreekanth
+docker:x:<gid>:$USER
 ```
 
 If the current terminal has not picked up the group membership, either:
@@ -633,7 +633,7 @@ Complete the initial SonarQube setup/login.
 
 ---
 
-# 20. Tomcat
+# 21. Tomcat
 
 Open:
 
@@ -655,7 +655,7 @@ Docker maps the host port:
 
 ---
 
-# 21. Docker Internal Networking
+# 22. Docker Internal Networking
 
 The containers communicate using the custom bridge network:
 
@@ -690,7 +690,7 @@ http://localhost:8053
 
 ---
 
-# 22. Test Container-to-Container Connectivity
+# 23. Test Container-to-Container Connectivity
 
 Enter Jenkins:
 
@@ -724,7 +724,7 @@ exit
 
 ---
 
-# 23. Check Logs
+# 24. Check Logs
 
 Jenkins:
 
@@ -770,7 +770,7 @@ docker compose logs --tail=50 sonarqube
 
 ---
 
-# 24. Check Resource Usage
+# 25. Check Resource Usage
 
 ```bash
 docker stats
@@ -780,7 +780,7 @@ SonarQube and Nexus can consume significant memory, so monitor resources when ru
 
 ---
 
-# 25. Start and Stop Services
+# 26. Start and Stop Services
 
 Stop:
 
@@ -826,7 +826,7 @@ docker compose restart tomcat
 
 ---
 
-# 26. Shutdown
+# 27. Shutdown
 
 Remove containers and keep all data:
 
@@ -844,7 +844,7 @@ Because the data is stored under `/data/devops-lab`, the application data remain
 
 ---
 
-# 27. Completely Delete the Lab
+# 28. Completely Delete the Lab
 
 This Compose file uses host bind mounts, not Docker named volumes.
 
@@ -864,7 +864,7 @@ sudo rm -rf /data/devops-lab
 
 ---
 
-# 28. Persistent Storage
+# 29. Persistent Storage
 
 All persistent data is stored directly under:
 
@@ -912,7 +912,7 @@ Mapping:
 
 ---
 
-# 29. Final Directory Structure
+# 30. Final Directory Structure
 
 ```text
 /data/devops-lab/
@@ -937,7 +937,7 @@ Mapping:
 
 ---
 
-# 30. Final Port Mapping
+# 31. Final Port Mapping
 
 ```text
 Host                     Container
@@ -959,7 +959,7 @@ Jenkins agent port:
 
 ---
 
-# 31. Final Network
+# 32. Final Network
 
 ```text
                     devops-net
@@ -980,7 +980,7 @@ Jenkins agent port:
 
 ---
 
-# 32. Jenkins CI/CD Flow
+# 33. Jenkins CI/CD Flow
 
 The intended CI/CD flow is:
 
@@ -1029,7 +1029,7 @@ Tomcat    → http://tomcat:8080
 
 ---
 
-# 33. Quick Installation
+# 34. Quick Installation
 
 Once Docker is installed:
 
@@ -1085,7 +1085,7 @@ http://localhost:8053
 
 ---
 
-# 34. Troubleshooting
+# 35. Troubleshooting
 
 ## Docker permission denied
 
@@ -1171,7 +1171,7 @@ docker network inspect devops-net
 
 ---
 
-# 35. Daily Commands
+# 36. Daily Commands
 
 Go to the lab:
 
@@ -1223,7 +1223,7 @@ docker network inspect devops-net
 
 ---
 
-# 36. Summary
+# 37. Summary
 
 This setup provides a persistent local DevOps environment:
 
